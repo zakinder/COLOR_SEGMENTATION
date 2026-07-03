@@ -1,0 +1,12 @@
+BMP input support update
+========================
+
+This package is configured for the uploaded 1000_500.bmp:
+
+* Width: 1000 pixels
+* Height: 500 pixels
+* Format: 24-bit BGR BI_RGB
+* Compression: uncompressed
+
+The testbench validates bits_pixel = 24 and rejects unsupported BMP formats for this package.
+Output is written using the same 24-bit BMP header format.

@@ -1,0 +1,19 @@
+Round-trip behavior note
+========================
+
+This package intentionally uses the full converter chain:
+
+  RGB input -> rgb_hsv -> hsv2rgb -> RGB output
+
+Therefore the generated BMP is expected to look similar to the input BMP. That is the correct result for a round-trip reconstruction test.
+
+Use the HSV visualization testbench only when you want the output image to visibly show HSV channels as colors:
+
+  viewer R = Hue
+  viewer G = Saturation
+  viewer B = Value
+
+
+SATURATION/VALUE CONTROL:
+The rgb_hsv.vhd source now supports internal constants for saturation and value adjustment.
+Change SATURATION_GAIN_PERCENT / SATURATION_OFFSET / VALUE_GAIN_PERCENT / VALUE_OFFSET in Source_Files/rgb_hsv.vhd, then rerun the testbench.

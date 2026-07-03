@@ -1,0 +1,48 @@
+RGB_HSV saturation/value adjustment constants
+============================================
+
+Updated source:
+  ../Source_Files/rgb_hsv.vhd
+
+Constants inside architecture rtl:
+
+  constant SATURATION_GAIN_PERCENT : integer := 100;
+  constant SATURATION_OFFSET       : integer := 0;
+
+  constant VALUE_GAIN_PERCENT      : integer := 100;
+  constant VALUE_OFFSET            : integer := 0;
+
+Behavior:
+  SATURATION_GAIN_PERCENT = 100 means no saturation gain change.
+  SATURATION_GAIN_PERCENT > 100 increases saturation.
+  SATURATION_GAIN_PERCENT < 100 decreases saturation.
+  SATURATION_OFFSET can add/subtract final saturation counts.
+
+  VALUE_GAIN_PERCENT = 100 means no value/brightness gain change.
+  VALUE_GAIN_PERCENT > 100 increases value/brightness.
+  VALUE_GAIN_PERCENT < 100 decreases value/brightness.
+  VALUE_OFFSET can add/subtract final value counts.
+
+All adjusted outputs are clamped to 0..255.
+
+Example settings:
+
+  More saturated output:
+    constant SATURATION_GAIN_PERCENT : integer := 130;
+    constant SATURATION_OFFSET       : integer := 0;
+
+  Less saturated output:
+    constant SATURATION_GAIN_PERCENT : integer := 70;
+    constant SATURATION_OFFSET       : integer := 0;
+
+  Brighter output:
+    constant VALUE_GAIN_PERCENT      : integer := 115;
+    constant VALUE_OFFSET            : integer := 0;
+
+  Darker output:
+    constant VALUE_GAIN_PERCENT      : integer := 85;
+    constant VALUE_OFFSET            : integer := 0;
+
+  Darker by fixed count:
+    constant VALUE_GAIN_PERCENT      : integer := 100;
+    constant VALUE_OFFSET            : integer := -20;
