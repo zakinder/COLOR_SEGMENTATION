@@ -1,21 +1,20 @@
 -------------------------------------------------------------------------------
 -- File        : tb_rgb_hsv2rgb_match_input_bmp.vhd
--- Description : Portable BMP-file testbench for RGB -> HSV -> RGB color-preserving round-trip.
+-- Description : Portable BMP-file testbench with packaged flat-color segmentation path.
 --
 -- Behavior:
 --   1. Reads an uncompressed 24-bit BMP file from Input_Image/1000_500.bmp.
 --   2. Loads the complete frame into simulation memory.
---   3. Streams the original RGB pixels into rgb_hsv without pre-filtering.
---   4. Feeds rgb_hsv output into hsv2rgb.
---   5. Writes reconstructed RGB pixels to Generated_Outputs/output_rgb_hsv2rgb_match_input.bmp.
+--   3. Default path uses flat_color_segment_pkg.vhd:
+--        RGB BMP -> 3x3 median -> HSV/object-aware flat segment
+--                -> 3x3 majority cleanup -> RGB BMP
+--   4. Optional legacy path still supports rgb_hsv -> hsv2rgb round-trip when
+--      USE_FLAT_SEGMENT_PACKAGE = false.
 --
--- Pipeline under test:
---   RGB BMP -> rgb_hsv -> hsv2rgb -> RGB BMP
+-- Default packaged flat-color strategy:
+--   USE_FLAT_SEGMENT_PACKAGE = true
 --
--- Default spatial filter:
---   PREFILTER_MODE = 0, bypass. This keeps the input colors visually matched.
---
--- Optional spatial-filter mode values:
+-- Legacy spatial-filter mode values, used only when USE_FLAT_SEGMENT_PACKAGE=false:
 --   0 = bypass; no spatial filtering
 --   1 = 3x3 box blur only
 --   2 = 3x3 median only
@@ -37,10 +36,67 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
+use work.flat_color_segment_pkg.all;
+
 entity tb_rgb_hsv2rgb_match_input_bmp is
   generic (
     INPUT_BMP_FILE  : string := "Input_Image/1000_500.bmp";
-    OUTPUT_BMP_FILE : string := "Generated_Outputs/output_rgb_hsv2rgb_match_input.bmp"
+
+    -- Use "AUTO" to build the output BMP name from active mode/generics.
+    -- Example packaged flat-color output:
+    --   Generated_Outputs/FlatSeg_Slt_40_Vdark_20_Vwhite_210_Maj_5_Pass_2.bmp
+    OUTPUT_BMP_FILE : string := "AUTO";
+
+    -- Packaged flat-color segmentation control.
+    -- true  = use flat_color_segment_pkg.vhd direct image strategy.
+    -- false = use legacy RGB -> rgb_hsv -> hsv2rgb streaming path below.
+    USE_FLAT_SEGMENT_PACKAGE         : boolean := false;
+    FLAT_SEGMENT_SAT_THRESHOLD_LOW   : integer := 60;
+    FLAT_SEGMENT_VALUE_DARK_LIMIT    : integer := 40;
+    FLAT_SEGMENT_VALUE_WHITE_LIMIT   : integer := 240;
+    FLAT_SEGMENT_MAJORITY_MIN_COUNT  : integer := 5;
+    FLAT_SEGMENT_MAJORITY_PASSES     : integer := 3;
+
+    -- Testbench image pre-filter control, used only by the legacy streaming path.
+    -- 0 = bypass, 1 = box blur, 2 = median, 3 = median followed by box blur.
+    PREFILTER_MODE  : integer := 3;
+
+	-- Flat-color / posterization controls
+	--
+	-- Controlled by entity generics. The packaged default enables flat-color
+	-- behavior; pass G_ENABLE_FLAT_COLOR => false for pure match-input round-trip.
+	--
+	-- More natural flat profile:
+	--   G_HUE_STEP                  := 32
+	--   G_SATURATION_STEP           := 64
+	--   G_VALUE_STEP                := 85
+	--   G_LOW_SATURATION_THRESHOLD  := 80
+	--   G_LOW_VALUE_THRESHOLD       := 60
+	--
+	-- Strong total-flat profile:
+	--   G_HUE_STEP                  := 64
+	--   G_SATURATION_STEP           := 128
+	--   G_VALUE_STEP                := 128
+	--   G_LOW_SATURATION_THRESHOLD  := 96
+	--   G_LOW_VALUE_THRESHOLD       := 64
+    RGB_HSV_HUE_OFFSET                 : integer := 4;
+    RGB_HSV_SATURATION_GAIN_PERCENT    : integer := 125;
+    RGB_HSV_SATURATION_OFFSET          : integer := 10;
+    RGB_HSV_VALUE_GAIN_PERCENT         : integer := 100;
+    RGB_HSV_VALUE_OFFSET               : integer := 0;
+
+    RGB_HSV_ENABLE_FLAT_COLOR          : boolean := true;
+    RGB_HSV_HUE_STEP                   : integer := 4;
+    RGB_HSV_SATURATION_STEP            : integer := 64;
+    RGB_HSV_VALUE_STEP                 : integer := 136;
+    RGB_HSV_FLAT_CENTER_BINS           : boolean := true;
+
+    RGB_HSV_LOW_SATURATION_TO_GRAY     : boolean := false;
+    RGB_HSV_LOW_SATURATION_THRESHOLD   : integer := 16;
+    RGB_HSV_LOW_VALUE_TO_BLACK         : boolean := false;
+    RGB_HSV_LOW_VALUE_THRESHOLD        : integer := 16;
+    RGB_HSV_FORCE_COLORED_SATURATION   : boolean := false;
+    RGB_HSV_FORCED_COLORED_SATURATION  : integer := 192
   );
 end entity tb_rgb_hsv2rgb_match_input_bmp;
 
@@ -52,9 +108,6 @@ architecture sim of tb_rgb_hsv2rgb_match_input_bmp is
   constant MAX_WIDTH  : integer := 1000;
   constant MAX_HEIGHT : integer := 500;
   constant MAX_PIXELS : integer := MAX_WIDTH * MAX_HEIGHT;
-
-  -- 0 = bypass, 1 = box blur, 2 = median, 3 = median followed by box blur.
-  constant PREFILTER_MODE : integer := 0;
 
   signal clk     : std_logic := '0';
   signal resetn  : std_logic := '0';
@@ -121,6 +174,54 @@ architecture sim of tb_rgb_hsv2rgb_match_input_bmp is
       return -x;
     else
       return x;
+    end if;
+  end function;
+
+  function bool1_to_string(x : boolean) return string is
+  begin
+    if x then
+      return "t";
+    else
+      return "f";
+    end if;
+  end function;
+
+  function flat_segment_output_bmp_name return string is
+  begin
+    return "Generated_Outputs/FlatSeg" &
+           "_Slt_"    & integer'image(FLAT_SEGMENT_SAT_THRESHOLD_LOW) &
+           "_Vdark_"  & integer'image(FLAT_SEGMENT_VALUE_DARK_LIMIT) &
+           "_Vwhite_" & integer'image(FLAT_SEGMENT_VALUE_WHITE_LIMIT) &
+           "_Maj_"    & integer'image(FLAT_SEGMENT_MAJORITY_MIN_COUNT) &
+           "_Pass_"   & integer'image(FLAT_SEGMENT_MAJORITY_PASSES) &
+           ".bmp";
+  end function;
+
+  function hsv_generic_output_bmp_name return string is
+  begin
+    return "Generated_Outputs/Ho_"  & integer'image(RGB_HSV_HUE_OFFSET) &
+           "_Sgp_" & integer'image(RGB_HSV_SATURATION_GAIN_PERCENT) &
+           "_So_"  & integer'image(RGB_HSV_SATURATION_OFFSET) &
+           "_Vgp_" & integer'image(RGB_HSV_VALUE_GAIN_PERCENT) &
+           "_Vo_"  & integer'image(RGB_HSV_VALUE_OFFSET) &
+           "_Enf_" & bool1_to_string(RGB_HSV_ENABLE_FLAT_COLOR) &
+           "_Hs_"  & integer'image(RGB_HSV_HUE_STEP) &
+           "_Ss_"  & integer'image(RGB_HSV_SATURATION_STEP) &
+           "_Vs_"  & integer'image(RGB_HSV_VALUE_STEP) &
+           "_Fcb_" & bool1_to_string(RGB_HSV_FLAT_CENTER_BINS) &
+           ".bmp";
+  end function;
+
+  function resolve_output_bmp_name(requested_name : string) return string is
+  begin
+    if requested_name = "AUTO" or requested_name = "" then
+      if USE_FLAT_SEGMENT_PACKAGE then
+        return flat_segment_output_bmp_name;
+      else
+        return hsv_generic_output_bmp_name;
+      end if;
+    else
+      return requested_name;
     end if;
   end function;
 
@@ -234,6 +335,24 @@ begin
   end process p_clk;
 
   u_rgb_hsv : entity work.rgb_hsv
+    generic map (
+      G_HUE_OFFSET                => RGB_HSV_HUE_OFFSET,
+      G_SATURATION_GAIN_PERCENT   => RGB_HSV_SATURATION_GAIN_PERCENT,
+      G_SATURATION_OFFSET         => RGB_HSV_SATURATION_OFFSET,
+      G_VALUE_GAIN_PERCENT        => RGB_HSV_VALUE_GAIN_PERCENT,
+      G_VALUE_OFFSET              => RGB_HSV_VALUE_OFFSET,
+      G_ENABLE_FLAT_COLOR         => RGB_HSV_ENABLE_FLAT_COLOR,
+      G_HUE_STEP                  => RGB_HSV_HUE_STEP,
+      G_SATURATION_STEP           => RGB_HSV_SATURATION_STEP,
+      G_VALUE_STEP                => RGB_HSV_VALUE_STEP,
+      G_FLAT_CENTER_BINS          => RGB_HSV_FLAT_CENTER_BINS,
+      G_LOW_SATURATION_TO_GRAY    => RGB_HSV_LOW_SATURATION_TO_GRAY,
+      G_LOW_SATURATION_THRESHOLD  => RGB_HSV_LOW_SATURATION_THRESHOLD,
+      G_LOW_VALUE_TO_BLACK        => RGB_HSV_LOW_VALUE_TO_BLACK,
+      G_LOW_VALUE_THRESHOLD       => RGB_HSV_LOW_VALUE_THRESHOLD,
+      G_FORCE_COLORED_SATURATION  => RGB_HSV_FORCE_COLORED_SATURATION,
+      G_FORCED_COLORED_SATURATION => RGB_HSV_FORCED_COLORED_SATURATION
+    )
     port map (
       clk          => clk,
       resetn       => resetn,
@@ -287,8 +406,10 @@ begin
   end process p_alpha_pipe;
 
   p_stimulus : process
+    constant ACTUAL_OUTPUT_BMP_FILE : string := resolve_output_bmp_name(OUTPUT_BMP_FILE);
+
     file bmp_in  : char_file open read_mode  is INPUT_BMP_FILE;
-    file bmp_out : char_file open write_mode is OUTPUT_BMP_FILE;
+    file bmp_out : char_file open write_mode is ACTUAL_OUTPUT_BMP_FILE;
 
     variable header       : header_type;
     variable c            : character;
@@ -321,6 +442,13 @@ begin
     variable red_med      : pixel_mem_t;
     variable green_med    : pixel_mem_t;
     variable blue_med     : pixel_mem_t;
+
+    -- Full-frame RGB memories used by flat_color_segment_pkg.vhd.
+    variable flat_src      : rgb_image_array_t(0 to MAX_PIXELS - 1);
+    variable flat_median   : rgb_image_array_t(0 to MAX_PIXELS - 1);
+    variable flat_segment  : rgb_image_array_t(0 to MAX_PIXELS - 1);
+    variable flat_major_a  : rgb_image_array_t(0 to MAX_PIXELS - 1);
+    variable flat_major_b  : rgb_image_array_t(0 to MAX_PIXELS - 1);
 
     procedure read_u8(file f : char_file; variable v : out integer) is
       variable ch : character;
@@ -372,6 +500,24 @@ begin
         if (out_count mod image_width) = 0 then
           write_zero_padding(fout, row_padding);
         end if;
+      end if;
+    end procedure;
+
+    procedure write_flat_rgb_pixel(
+      file fout             : char_file;
+      constant rgb24        : in rgb24_t;
+      constant byte_count_pixel : in integer;
+      constant alpha_value  : in integer
+    ) is
+    begin
+      -- rgb24_t = RED[23:16] & GREEN[15:8] & BLUE[7:0].
+      -- BMP byte order is B, G, R.
+      write_u8(fout, to_integer(unsigned(rgb24(7 downto 0))));
+      write_u8(fout, to_integer(unsigned(rgb24(15 downto 8))));
+      write_u8(fout, to_integer(unsigned(rgb24(23 downto 16))));
+
+      if byte_count_pixel = 4 then
+        write_u8(fout, alpha_value);
       end if;
     end procedure;
 
@@ -440,9 +586,30 @@ begin
       report "Input BMP is larger than this testbench memory limit. Increase MAX_WIDTH/MAX_HEIGHT." severity failure;
 
     report "Input BMP       : " & INPUT_BMP_FILE severity note;
-    report "Output BMP      : " & OUTPUT_BMP_FILE severity note;
-    report "Output mode     : RGB -> HSV -> RGB match-input-color round-trip" severity note;
-    report "Prefilter mode  : " & integer'image(PREFILTER_MODE) & " 0=bypass, 1=blur, 2=median, 3=median+blur" severity note;
+    report "Output BMP      : " & ACTUAL_OUTPUT_BMP_FILE severity note;
+    report "Output name mode: " & OUTPUT_BMP_FILE & "  AUTO=HSV-generic encoded name" severity note;
+    if USE_FLAT_SEGMENT_PACKAGE then
+      report "Output mode     : flat_color_segment_pkg direct BMP strategy" severity note;
+      report "Flat pipeline   : RGB -> 3x3 median -> HSV segment -> 3x3 majority cleanup" severity note;
+      report "Flat controls   : sat_low=" & integer'image(FLAT_SEGMENT_SAT_THRESHOLD_LOW) &
+             ", value_dark=" & integer'image(FLAT_SEGMENT_VALUE_DARK_LIMIT) &
+             ", value_white=" & integer'image(FLAT_SEGMENT_VALUE_WHITE_LIMIT) &
+             ", majority_min=" & integer'image(FLAT_SEGMENT_MAJORITY_MIN_COUNT) &
+             ", majority_passes=" & integer'image(FLAT_SEGMENT_MAJORITY_PASSES) severity note;
+    else
+      report "Output mode     : RGB -> HSV -> RGB match-input-color round-trip" severity note;
+      report "Prefilter mode  : " & integer'image(PREFILTER_MODE) & " 0=bypass, 1=blur, 2=median, 3=median+blur" severity note;
+    end if;
+    report "rgb_hsv generics: flat=" & boolean'image(RGB_HSV_ENABLE_FLAT_COLOR) &
+           ", hue_step=" & integer'image(RGB_HSV_HUE_STEP) &
+           ", sat_step=" & integer'image(RGB_HSV_SATURATION_STEP) &
+           ", value_step=" & integer'image(RGB_HSV_VALUE_STEP) severity note;
+    report "rgb_hsv gains   : sat_gain=" & integer'image(RGB_HSV_SATURATION_GAIN_PERCENT) &
+           ", value_gain=" & integer'image(RGB_HSV_VALUE_GAIN_PERCENT) &
+           ", value_offset=" & integer'image(RGB_HSV_VALUE_OFFSET) severity note;
+    report "rgb_hsv guards  : low_sat_gray=" & boolean'image(RGB_HSV_LOW_SATURATION_TO_GRAY) &
+           ", low_value_black=" & boolean'image(RGB_HSV_LOW_VALUE_TO_BLACK) &
+           ", force_sat=" & boolean'image(RGB_HSV_FORCE_COLORED_SATURATION) severity note;
     report "BMP format      : " & integer'image(bits_pixel) & "-bit BI_RGB" severity note;
     report "Width           : " & integer'image(width) severity note;
     report "Height          : " & integer'image(height_abs) severity note;
@@ -481,6 +648,7 @@ begin
         green_src(pix_idx) := g_in;
         blue_src(pix_idx)  := b_in;
         alpha_src(pix_idx) := a_in;
+        flat_src(pix_idx)  := flat_make_rgb24(r_in, g_in, b_in);
         input_count := input_count + 1;
       end loop;
 
@@ -490,6 +658,79 @@ begin
         read(bmp_in, c);
       end loop;
     end loop;
+
+    ---------------------------------------------------------------------------
+    -- Packaged flat-color segmentation path.
+    -- This path intentionally bypasses rgb_hsv/hsv2rgb and uses the reusable
+    -- flat_color_segment_pkg.vhd strategy directly in the testbench:
+    --   1) 3x3 median RGB pre-filter
+    --   2) HSV/object-aware flat palette segmentation
+    --   3) 3x3 majority-class cleanup, optionally repeated
+    --   4) direct RGB BMP write
+    ---------------------------------------------------------------------------
+    if USE_FLAT_SEGMENT_PACKAGE then
+      report "Applying flat_color_segment_pkg 3x3 median pre-filter..." severity note;
+      flat_apply_median_filter(width, height_abs, flat_src, flat_median);
+
+      report "Applying flat_color_segment_pkg HSV flat-color segmentation..." severity note;
+      flat_apply_hsv_segmentation(
+        width,
+        height_abs,
+        flat_median,
+        flat_segment,
+        FLAT_SEGMENT_SAT_THRESHOLD_LOW,
+        FLAT_SEGMENT_VALUE_DARK_LIMIT,
+        FLAT_SEGMENT_VALUE_WHITE_LIMIT
+      );
+
+      report "Applying flat_color_segment_pkg 3x3 majority cleanup..." severity note;
+      flat_apply_majority_filter(
+        width,
+        height_abs,
+        flat_segment,
+        flat_major_a,
+        FLAT_SEGMENT_MAJORITY_MIN_COUNT
+      );
+
+      if FLAT_SEGMENT_MAJORITY_PASSES > 1 then
+        for pass_index in 2 to FLAT_SEGMENT_MAJORITY_PASSES loop
+          flat_apply_majority_filter(
+            width,
+            height_abs,
+            flat_major_a,
+            flat_major_b,
+            FLAT_SEGMENT_MAJORITY_MIN_COUNT
+          );
+          flat_copy_image(flat_major_b, flat_major_a);
+        end loop;
+      end if;
+
+      report "Writing packaged flat-color BMP output..." severity note;
+      for y in 0 to height_abs - 1 loop
+        for x in 0 to width - 1 loop
+          pix_idx := (y * width) + x;
+          write_flat_rgb_pixel(bmp_out, flat_major_a(pix_idx), bytes_pixel, alpha_src(pix_idx));
+          output_count := output_count + 1;
+        end loop;
+        write_zero_padding(bmp_out, padding);
+      end loop;
+
+      while not endfile(bmp_in) loop
+        read(bmp_in, c);
+        write(bmp_out, c);
+      end loop;
+
+      file_close(bmp_out);
+      file_close(bmp_in);
+
+      report "Input pixels loaded  : " & integer'image(input_count) severity note;
+      report "Output pixels written: " & integer'image(output_count) severity note;
+      report "Output BMP closed    : " & ACTUAL_OUTPUT_BMP_FILE severity note;
+      report "tb_rgb_hsv2rgb_match_input_bmp completed successfully using flat_color_segment_pkg." severity note;
+
+      tb_done <= true;
+      wait;
+    end if;
 
     ---------------------------------------------------------------------------
     -- Build the optional median intermediate frame. The median stage removes
@@ -503,9 +744,9 @@ begin
     end if;
 
     ---------------------------------------------------------------------------
-    -- Stream RGB pixels through rgb_hsv -> hsv2rgb.
+    -- Legacy path: stream RGB pixels through rgb_hsv -> hsv2rgb.
     ---------------------------------------------------------------------------
-    report "Streaming RGB frame through rgb_hsv -> hsv2rgb..." severity note;
+    report "Streaming RGB frame through legacy rgb_hsv -> hsv2rgb path..." severity note;
 
     for y in 0 to height_abs - 1 loop
       for x in 0 to width - 1 loop
@@ -583,7 +824,7 @@ begin
 
     report "Input pixels loaded  : " & integer'image(input_count) severity note;
     report "Output pixels written: " & integer'image(output_count) severity note;
-    report "Output BMP closed    : " & OUTPUT_BMP_FILE severity note;
+    report "Output BMP closed    : " & ACTUAL_OUTPUT_BMP_FILE severity note;
     report "tb_rgb_hsv2rgb_match_input_bmp completed successfully." severity note;
 
     tb_done <= true;

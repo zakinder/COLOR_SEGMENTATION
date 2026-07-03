@@ -44,6 +44,31 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity rgb_hsv is
+  generic (
+    -- Hue adjustment. Hue wraps around 0..255.
+    G_HUE_OFFSET                 : integer := 0;
+
+    -- Saturation/value adjustment. 100 = unity gain. Offsets are signed.
+    G_SATURATION_GAIN_PERCENT    : integer := 125;
+    G_SATURATION_OFFSET          : integer := 0;
+    G_VALUE_GAIN_PERCENT         : integer := 125;
+    G_VALUE_OFFSET               : integer := 0;
+
+    -- Flat-color / posterization controls.
+    G_ENABLE_FLAT_COLOR          : boolean := true;
+    G_HUE_STEP                   : integer := 32;
+    G_SATURATION_STEP            : integer := 64;
+    G_VALUE_STEP                 : integer := 32;
+    G_FLAT_CENTER_BINS           : boolean := false;
+
+    -- Noise/speckle guards.
+    G_LOW_SATURATION_TO_GRAY     : boolean := false;
+    G_LOW_SATURATION_THRESHOLD   : integer := 96;
+    G_LOW_VALUE_TO_BLACK         : boolean := false;
+    G_LOW_VALUE_THRESHOLD        : integer := 64;
+    G_FORCE_COLORED_SATURATION   : boolean := false;
+    G_FORCED_COLORED_SATURATION  : integer := 192
+  );
   port (
     clk          : in  std_logic;
     resetn       : in  std_logic;
@@ -78,7 +103,7 @@ architecture rtl of rgb_hsv is
   --   85   = about 120 degrees on the color wheel
   --   128  = near opposite-color / false-color shift
   -----------------------------------------------------------------------------
-  constant HUE_OFFSET : integer := 0;
+  -- Implemented as entity generic G_HUE_OFFSET.
 
   -----------------------------------------------------------------------------
   -- Saturation/value adjustment controls
@@ -89,62 +114,62 @@ architecture rtl of rgb_hsv is
   -- OFFSET constants add or subtract a final signed value after gain scaling.
   -- Final saturation/value results are clamped to 0..255.
   -----------------------------------------------------------------------------
-  constant SATURATION_GAIN_PERCENT : integer := 125;
-  constant SATURATION_OFFSET       : integer := 0;
+  -- Implemented as entity generic G_SATURATION_GAIN_PERCENT.
+  -- Implemented as entity generic G_SATURATION_OFFSET.
 
-  constant VALUE_GAIN_PERCENT      : integer := 125;
-  constant VALUE_OFFSET            : integer := 10;
+  -- Implemented as entity generic G_VALUE_GAIN_PERCENT.
+  -- Implemented as entity generic G_VALUE_OFFSET.
 
   -----------------------------------------------------------------------------
   -- Flat-color / posterization controls
   --
-  -- Default is MATCH-INPUT-COLOR mode. Flat-color/posterization is disabled
-  -- so RGB -> HSV -> RGB remains visually close to the input image.
+  -- Controlled by entity generics. The packaged default enables flat-color
+  -- behavior; pass G_ENABLE_FLAT_COLOR => false for pure match-input round-trip.
   --
   -- More natural flat profile:
-  --   HUE_STEP                  := 32
-  --   SATURATION_STEP           := 64
-  --   VALUE_STEP                := 85
-  --   LOW_SATURATION_THRESHOLD  := 80
-  --   LOW_VALUE_THRESHOLD       := 60
+  --   G_HUE_STEP                  := 32
+  --   G_SATURATION_STEP           := 64
+  --   G_VALUE_STEP                := 85
+  --   G_LOW_SATURATION_THRESHOLD  := 80
+  --   G_LOW_VALUE_THRESHOLD       := 60
   --
   -- Strong total-flat profile:
-  --   HUE_STEP                  := 64
-  --   SATURATION_STEP           := 128
-  --   VALUE_STEP                := 128
-  --   LOW_SATURATION_THRESHOLD  := 96
-  --   LOW_VALUE_THRESHOLD       := 64
+  --   G_HUE_STEP                  := 64
+  --   G_SATURATION_STEP           := 128
+  --   G_VALUE_STEP                := 128
+  --   G_LOW_SATURATION_THRESHOLD  := 96
+  --   G_LOW_VALUE_THRESHOLD       := 64
   -----------------------------------------------------------------------------
-  constant ENABLE_FLAT_COLOR       : boolean := true;
-  constant HUE_STEP                : integer := 32;
-  constant SATURATION_STEP         : integer := 32;
-  constant VALUE_STEP              : integer := 16;
-  constant FLAT_CENTER_BINS        : boolean := false;
+  -- Implemented as entity generic G_ENABLE_FLAT_COLOR.
+  -- Implemented as entity generic G_HUE_STEP.
+  -- Implemented as entity generic G_SATURATION_STEP.
+  -- Implemented as entity generic G_VALUE_STEP.
+  -- Implemented as entity generic G_FLAT_CENTER_BINS.
 
   -----------------------------------------------------------------------------
   -- Noise/speckle guards for flatter output
   --
-  -- LOW_SATURATION_TO_GRAY:
-  --   When saturation is below LOW_SATURATION_THRESHOLD, hue is not reliable.
+  -- G_LOW_SATURATION_TO_GRAY:
+  --   When saturation is below G_LOW_SATURATION_THRESHOLD, hue is not reliable.
   --   The pixel is forced to neutral grayscale before value quantization.
   --
-  -- LOW_VALUE_TO_BLACK:
+  -- G_LOW_VALUE_TO_BLACK:
   --   Very dark pixels often carry noisy hue/saturation due to small channel
   --   differences. These pixels are forced to black.
   --
-  -- FORCE_COLORED_SATURATION:
+  -- G_FORCE_COLORED_SATURATION:
   --   Optional. When true, all non-gray/non-black colored pixels use one fixed
   --   saturation value. This makes colors even flatter, but can look less
   --   natural on skin tones. Default false keeps more color balance.
   -----------------------------------------------------------------------------
-  constant LOW_SATURATION_TO_GRAY      : boolean := false;
-  constant LOW_SATURATION_THRESHOLD    : integer := 96;
+  -- Implemented as entity generic G_LOW_SATURATION_TO_GRAY.
+  -- Implemented as entity generic G_LOW_SATURATION_THRESHOLD.
 
-  constant LOW_VALUE_TO_BLACK          : boolean := false;
-  constant LOW_VALUE_THRESHOLD         : integer := 64;
+  -- Implemented as entity generic G_LOW_VALUE_TO_BLACK.
+  -- Implemented as entity generic G_LOW_VALUE_THRESHOLD.
 
-  constant FORCE_COLORED_SATURATION    : boolean := false;
-  constant FORCED_COLORED_SATURATION   : integer := 192;
+  -- Implemented as entity generic G_FORCE_COLORED_SATURATION.
+  -- Implemented as entity generic G_FORCED_COLORED_SATURATION.
 
   function max3(a : integer; b : integer; c : integer) return integer is
     variable m : integer;
@@ -294,7 +319,7 @@ begin
         -----------------------------------------------------------------------
         -- Value calculation
         -----------------------------------------------------------------------
-        value_v := adjust_u8(max_v, VALUE_GAIN_PERCENT, VALUE_OFFSET);
+        value_v := adjust_u8(max_v, G_VALUE_GAIN_PERCENT, G_VALUE_OFFSET);
 
         -----------------------------------------------------------------------
         -- Saturation calculation
@@ -305,7 +330,7 @@ begin
           -- Rounded saturation: delta / max, scaled to 0..255.
           sat_v := ((delta_v * 255) + (max_v / 2)) / max_v;
         end if;
-        sat_v := adjust_u8(sat_v, SATURATION_GAIN_PERCENT, SATURATION_OFFSET);
+        sat_v := adjust_u8(sat_v, G_SATURATION_GAIN_PERCENT, G_SATURATION_OFFSET);
 
         -----------------------------------------------------------------------
         -- Hue calculation
@@ -339,36 +364,36 @@ begin
         end if;
 
         -- Hue wraps because it is circular.
-        hue_v := wrap_int_u8(hue_v + HUE_OFFSET);
+        hue_v := wrap_int_u8(hue_v + G_HUE_OFFSET);
 
         -----------------------------------------------------------------------
         -- Strong flat-color quantization stage
         -----------------------------------------------------------------------
-        if ENABLE_FLAT_COLOR then
+        if G_ENABLE_FLAT_COLOR then
 
           -- Dark-pixel noise guard: avoid random colored shadows.
-          if LOW_VALUE_TO_BLACK and (value_v <= LOW_VALUE_THRESHOLD) then
+          if G_LOW_VALUE_TO_BLACK and (value_v <= G_LOW_VALUE_THRESHOLD) then
             hue_v   := 0;
             sat_v   := 0;
             value_v := 0;
 
           else
             -- Low-saturation guard: hue is unstable when RGB channels are close.
-            if LOW_SATURATION_TO_GRAY and (sat_v <= LOW_SATURATION_THRESHOLD) then
+            if G_LOW_SATURATION_TO_GRAY and (sat_v <= G_LOW_SATURATION_THRESHOLD) then
               hue_v := 0;
               sat_v := 0;
             else
-              hue_v := quantize_wrap_u8(hue_v, HUE_STEP, FLAT_CENTER_BINS);
+              hue_v := quantize_wrap_u8(hue_v, G_HUE_STEP, G_FLAT_CENTER_BINS);
 
-              if FORCE_COLORED_SATURATION then
-                sat_v := clamp_int_u8(FORCED_COLORED_SATURATION);
+              if G_FORCE_COLORED_SATURATION then
+                sat_v := clamp_int_u8(G_FORCED_COLORED_SATURATION);
               else
-                sat_v := quantize_clamp_u8(sat_v, SATURATION_STEP, FLAT_CENTER_BINS);
+                sat_v := quantize_clamp_u8(sat_v, G_SATURATION_STEP, G_FLAT_CENTER_BINS);
               end if;
             end if;
 
             -- Value is the most important channel for removing shading noise.
-            value_v := quantize_clamp_u8(value_v, VALUE_STEP, FLAT_CENTER_BINS);
+            value_v := quantize_clamp_u8(value_v, G_VALUE_STEP, G_FLAT_CENTER_BINS);
           end if;
         end if;
 

@@ -1,9 +1,10 @@
 # Source Files
 
-These VHDL files are portable and do not depend on project-specific packages.
+These VHDL files are portable. The testbench now uses `flat_color_segment_pkg.vhd` for the default flat-color segmentation path.
 
 | File | Purpose |
 |---|---|
+| `flat_color_segment_pkg.vhd` | Reusable BMP/GHDL flat-color segmentation helper package: 3x3 median, HSV flat classifier, majority cleanup. |
 | `rgb_hsv.vhd` | Converts 8-bit RGB to 8-bit HSV. |
 | `hsv2rgb.vhd` | Converts 8-bit HSV to 8-bit RGB. |
 | `div16_8_8.vhd` | Portable 16-bit by 8-bit divider helper retained with the source set. |
